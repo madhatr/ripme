@@ -9,8 +9,9 @@ import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.net.MalformedURLException;
 import java.net.URL;
-import java.nio.file.InvalidPathException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -244,9 +245,10 @@ public abstract class AbstractRipper
      */
     protected boolean addURLToDownload(URL url, Map<String, String> options, Map<String, String> cookies) {
         // Bit of a hack but this lets us pass a bool using a map<string,String>
-        boolean useMIME = options.getOrDefault("getFileExtFromMIME", "false").toLowerCase().equals("true");
-        return addURLToDownload(url, options.getOrDefault("prefix", ""), options.getOrDefault("subdirectory", ""), options.getOrDefault("referrer", null),
-                cookies, options.getOrDefault("fileName", null), options.getOrDefault("extension", null), useMIME);
+        boolean useMIME = options.getOrDefault("getFileExtFromMIME", "false").equalsIgnoreCase("true");
+        return addURLToDownload(url, options.getOrDefault("subdirectory", ""), options.getOrDefault("referrer", null),  cookies,
+                options.getOrDefault("prefix", ""), options.getOrDefault("fileName", null), options.getOrDefault("extension", null),
+                useMIME);
     }
 
 
@@ -284,7 +286,7 @@ public abstract class AbstractRipper
      *      True if downloaded successfully
      *      False if failed to download
      */
-    protected boolean addURLToDownload(URL url, String prefix, String subdirectory, String referrer, Map<String, String> cookies, String fileName, String extension, Boolean getFileExtFromMIME) {
+    protected boolean addURLToDownload(URL url, String subdirectory, String referrer, Map<String, String> cookies, String prefix, String fileName, String extension, Boolean getFileExtFromMIME) {
         // A common bug is rippers adding urls that are just "http:". This rejects said urls
         if (url.toExternalForm().equals("http:") || url.toExternalForm().equals("https:")) {
             LOGGER.info(url.toExternalForm() + " is a invalid url amd will be changed");
@@ -315,33 +317,18 @@ public abstract class AbstractRipper
             LOGGER.debug("Ripper has been stopped");
             return false;
         }
-        LOGGER.debug("url: " + url + ", prefix: " + prefix + ", subdirectory" + subdirectory + ", referrer: " + referrer + ", cookies: " + cookies + ", fileName: " + fileName);
-        String saveAs = getFileName(url, fileName, extension);
-        File saveFileAs;
+        LOGGER.debug("url: " + url + ", subdirectory" + subdirectory + ", referrer: " + referrer + ", cookies: " + cookies + ", prefix: " + prefix + ", fileName: " + fileName);
+        Path saveAs;
         try {
-            if (!subdirectory.equals("")) {
-                subdirectory = Utils.filesystemSafe(subdirectory);
-                subdirectory = File.separator + subdirectory;
+            saveAs = getFilePath(url, subdirectory, prefix, fileName, extension);
+            LOGGER.debug("Downloading " + url + " to " + saveAs);
+            if (!Files.exists(saveAs.getParent())) {
+                LOGGER.info("[+] Creating directory: " + saveAs.getParent());
+                Files.createDirectories(saveAs.getParent());
             }
-            prefix = Utils.filesystemSanitized(prefix);
-            String topFolderName = workingDir.getCanonicalPath();
-            if (App.stringToAppendToFoldername != null) {
-                topFolderName = topFolderName + App.stringToAppendToFoldername;
-            }
-            saveFileAs = new File(
-                    topFolderName
-                    + subdirectory
-                    + File.separator
-                    + prefix
-                    + saveAs);
         } catch (IOException e) {
             LOGGER.error("[!] Error creating save file path for URL '" + url + "':", e);
             return false;
-        }
-        LOGGER.debug("Downloading " + url + " to " + saveFileAs);
-        if (!saveFileAs.getParentFile().exists()) {
-            LOGGER.info("[+] Creating directory: " + Utils.removeCWD(saveFileAs.getParent()));
-            saveFileAs.getParentFile().mkdirs();
         }
         if (Utils.getConfigBoolean("remember.url_history", true) && !isThisATest()) {
             LOGGER.info("Writing " + url.toExternalForm() + " to file");
@@ -351,11 +338,11 @@ public abstract class AbstractRipper
                 LOGGER.debug("Unable to write URL history file");
             }
         }
-        return addURLToDownload(url, saveFileAs.toPath(), referrer, cookies, getFileExtFromMIME);
+        return addURLToDownload(url, saveAs, referrer, cookies, getFileExtFromMIME);
     }
 
     protected boolean addURLToDownload(URL url, String prefix, String subdirectory, String referrer, Map<String,String> cookies, String fileName, String extension) {
-        return addURLToDownload(url, prefix, subdirectory, referrer, cookies, fileName, extension, false);
+        return addURLToDownload(url, subdirectory, referrer, cookies, prefix, fileName, extension, false);
     }
 
     protected boolean addURLToDownload(URL url, String prefix, String subdirectory, String referrer, Map<String, String> cookies, String fileName) {
@@ -394,33 +381,53 @@ public abstract class AbstractRipper
         return addURLToDownload(url, prefix, "");
     }
 
-    public static String getFileName(URL url, String fileName, String extension) {
-        String saveAs;
-        if (fileName != null) {
-            saveAs = fileName;
-        } else {
-            saveAs = url.toExternalForm();
-            saveAs = saveAs.substring(saveAs.lastIndexOf('/')+1);
+    public Path getFilePath(URL url, String subdir, String prefix, String fileName, String extension) throws IOException {
+        // construct the path: workingdir + subdir + prefix + filename + extension
+        // save into working dir
+        Path filepath = Paths.get(workingDir.getCanonicalPath());
+
+        if (null != App.stringToAppendToFoldername)
+            filepath = filepath.resolveSibling(filepath.getFileName() + App.stringToAppendToFoldername);
+
+        if (null != subdir && !subdir.trim().isEmpty())
+            filepath = filepath.resolve(Utils.filesystemSafe(subdir));
+
+        filepath = filepath.resolve(getFileName(url, prefix, fileName, extension));
+        return filepath;
+    }
+
+    public static String getFileName(URL url, String prefix, String fileName, String extension) {
+        // retrieve filename from URL if not passed
+        if (fileName == null || fileName.trim().isEmpty()) {
+            fileName = url.toExternalForm();
+            fileName = fileName.substring(fileName.lastIndexOf('/')+1);
         }
-        if (extension == null) {
+        if (fileName.indexOf('?') >= 0) { fileName = fileName.substring(0, fileName.indexOf('?')); }
+        if (fileName.indexOf('#') >= 0) { fileName = fileName.substring(0, fileName.indexOf('#')); }
+        if (fileName.indexOf('&') >= 0) { fileName = fileName.substring(0, fileName.indexOf('&')); }
+        if (fileName.indexOf(':') >= 0) { fileName = fileName.substring(0, fileName.indexOf(':')); }
+
+        // add prefix
+        if (prefix != null && !prefix.trim().isEmpty()) {
+            fileName = prefix + fileName;
+        }
+
+        // retrieve extension from URL if not passed, no extension if nothing found
+        if (extension == null || extension.trim().isEmpty()) {
             // Get the extension of the file
             String[] lastBitOfURL = url.toExternalForm().split("/");
 
             String[] lastBit = lastBitOfURL[lastBitOfURL.length - 1].split(".");
             if (lastBit.length != 0) {
                 extension = lastBit[lastBit.length - 1];
-                saveAs = saveAs + "." + extension;
             }
         }
-
-        if (saveAs.indexOf('?') >= 0) { saveAs = saveAs.substring(0, saveAs.indexOf('?')); }
-        if (saveAs.indexOf('#') >= 0) { saveAs = saveAs.substring(0, saveAs.indexOf('#')); }
-        if (saveAs.indexOf('&') >= 0) { saveAs = saveAs.substring(0, saveAs.indexOf('&')); }
-        if (saveAs.indexOf(':') >= 0) { saveAs = saveAs.substring(0, saveAs.indexOf(':')); }
+        // if extension is passed or found, add it
         if (extension != null) {
-            saveAs = saveAs + "." + extension;
+            fileName = fileName + "." + extension;
         }
-        return saveAs;
+        // make sure filename is not too long and has no unsupported chars
+        return Utils.sanitizeSaveAs(fileName);
     }
 
 
@@ -456,15 +463,11 @@ public abstract class AbstractRipper
     public abstract void downloadCompleted(URL url, Path saveAs);
     /**
      * Notifies observers that a file could not be downloaded (includes a reason).
-     * @param url
-     * @param reason
      */
     public abstract void downloadErrored(URL url, String reason);
     /**
      * Notify observers that a download could not be completed,
      * but was not technically an "error".
-     * @param url
-     * @param file
      */
     public abstract void downloadExists(URL url, Path file);
 
@@ -582,7 +585,6 @@ public abstract class AbstractRipper
      *      The package name.
      * @return
      *      List of constructors for all eligible Rippers.
-     * @throws Exception
      */
     public static List<Constructor<?>> getRipperConstructors(String pkg) throws Exception {
         List<Constructor<?>> constructors = new ArrayList<>();
@@ -596,8 +598,7 @@ public abstract class AbstractRipper
 
     /**
      * Sends an update message to the relevant observer(s) on this ripper.
-     * @param status 
-     * @param message
+     * @param status
      */
     public void sendUpdate(STATUS status, Object message) {
         if (observer == null) {
