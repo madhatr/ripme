@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -624,11 +625,16 @@ public abstract class AbstractRipper
         try {
             rip();
         } catch (HttpStatusException e) {
-            LOGGER.error("Got exception while running ripper:", e);
+            LOGGER.error("AbstractRipper:HttpStatusException:", e);
             waitForThreads();
             sendUpdate(STATUS.RIP_ERRORED, "HTTP status code " + e.getStatusCode() + " for URL " + e.getUrl());
+        } catch (InvalidPathException e) {
+            LOGGER.error(url.toString());
+            LOGGER.error("AbstractRipper:InvalidPathException: ",e);
+            waitForThreads();
+            sendUpdate(STATUS.RIP_ERRORED, e.getMessage());
         } catch (Exception e) {
-            LOGGER.error("Got exception while running ripper:", e);
+            LOGGER.error("AbstractRipper:Exception:", e);
             waitForThreads();
             sendUpdate(STATUS.RIP_ERRORED, e.getMessage());
         } finally {
